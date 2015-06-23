@@ -442,6 +442,7 @@ static void configure(int handle, int argc, char **argv)
 					case 0x30:	st = "running on battery";	break;
 					case 0x50:	st = "charging";		break;
 					case 0x90:	st = "fully charged";		break;
+					case 0xd0:	st = "battery bad";		break;
 					default:	sprintf(st = str, "status %02x", buf[5]);
 				}
 				printf("battery level %d%%, %s\n", buf[3], st);
