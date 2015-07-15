@@ -61,6 +61,11 @@
 #include <linux/input.h>
 #include <linux/hidraw.h>
 
+typedef unsigned char u8;
+typedef signed short s16;
+typedef signed int s32;
+typedef unsigned int u32;
+
 #define streq(a,b)	(strcmp((a), (b)) == 0)
 #define strneq(a,b,c)	(strncmp((a), (b), (c)) == 0)
 
@@ -72,16 +77,7 @@
 #define MX_REVOLUTION5	0xb007	// ??? R0019 (added 2015-05-30)
 #define MX_5500			0xc71c	// keyboard/mouse combo - experimental
 
-static int first_byte;
-
-/*** extracted from hiddev.h ***/
-typedef unsigned char u8;
-typedef signed short s16;
-typedef signed int s32;
-typedef unsigned int u32;
-
-/*** end hiddev.h ***/
-
+static u8 first_byte;
 
 static void fatal(const char *fmt, ...)
 {
@@ -145,7 +141,7 @@ static void close_dev(int fd)
 	close(fd);
 }
 
-static void send_report(int fd, u8 id, const u8 *buf, int n)
+static void send_report(int fd, u8 id, u8 *buf, int n)
 {
 	int i, res;
 	u8 *send_buf = (u8*) malloc(n+1);
@@ -153,7 +149,6 @@ static void send_report(int fd, u8 id, const u8 *buf, int n)
 
 	for(i = 1; i < n+1; i++) {
 		send_buf[i] = buf[i-1];
-		printf("%x\n", send_buf[i]);
 	}
 
 	res = write(fd, send_buf, n+1);
@@ -161,8 +156,6 @@ static void send_report(int fd, u8 id, const u8 *buf, int n)
 	if (res < 0) {
 		printf("Error: %d\n", errno);
 		perror("write");
-	} else {
-		printf("write() wrote %d bytes\n", res);
 	}
 
 	//wait_report(fd, 3000);
@@ -175,11 +168,6 @@ static void query_report(int fd, u8 id, u8 *buf, int n)
 	buf = buf+1;
 	if (res < 0) {
 		perror("read");
-	} else {
-		printf("read() read %d bytes:\n\t", res);
-		for (i = 0; i < res; i++)
-			printf("%hhx ", buf[i]);
-		puts("\n");
 	}
 }
 
@@ -202,11 +190,11 @@ static int mx_query(int fd, u8 b1, u8 *res)
 		res[i] = res[i+1];
 
 	if ((
-		res[0]  != 0x00 ||
+		(res[0] != 0x02 && res[0] != 0x01 && res[0] != 0x00) ||
 		res[1]  != 0x81 ||
 		(res[2] != 0xb1 && res[2] != 0x08)
 	) && (
-		res[0]  != 0x00 ||
+		(res[0] != 0x02 && res[0] != 0x01 && res[0] != 0x00) ||
 		res[1]  != 0x81 ||
 		(res[2] != 0x0d && res[2] != 0x08)
 	))
