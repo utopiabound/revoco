@@ -1,11 +1,12 @@
 /*
  * Simple hack to control the wheel of Logitech's MX-Revolution mouse.
  *
- * Requires hiddev.
+ * Requires hidraw.
  *
- * Written November 2006 by E. Toernig's bonobo - no copyrights.
+ * Written November 2006 by Matthew Skolaut - no copyrights.
+ * Modified from revoco written November 2006 by E. Toernig's bonobo - no copyrights.
  *
- * Contact: Edgar Toernig <froese@gmx.de>
+ * Contact: Matthew Skolaut <tech2077@gmail.com>
  *
  * Discovered commands:
  * (all numbers in hex, FS=free-spinning mode, CC=click-to-click mode):
@@ -56,7 +57,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include <sys/select.h>
+#include <linux/types.h>
+#include <linux/input.h>
+#include <linux/hidraw.h>
 
 #define streq(a,b)	(strcmp((a), (b)) == 0)
 #define strneq(a,b,c)	(strncmp((a), (b), (c)) == 0)
@@ -72,59 +75,10 @@
 static int first_byte;
 
 /*** extracted from hiddev.h ***/
-
+typedef unsigned char u8;
 typedef signed short s16;
 typedef signed int s32;
 typedef unsigned int u32;
-
-struct hiddev_devinfo {
-	u32 bustype;
-	u32 busnum;
-	u32 devnum;
-	u32 ifnum;
-	s16 vendor;
-	s16 product;
-	s16 version;
-	u32 num_applications;
-};
-
-struct hiddev_report_info {
-	u32 report_type;
-	u32 report_id;
-	u32 num_fields;
-};
-
-#define HID_REPORT_TYPE_INPUT	1
-#define HID_REPORT_TYPE_OUTPUT	2
-#define HID_REPORT_TYPE_FEATURE	3
-
-struct hiddev_usage_ref {
-	u32 report_type;
-	u32 report_id;
-	u32 field_index;
-	u32 usage_index;
-	u32 usage_code;
-	s32 value;
-};
-
-struct hiddev_usage_ref_multi {
-	struct hiddev_usage_ref uref;
-	u32 num_values;
-	s32 values[1024];
-};
-
-#define HIDIOCGDEVINFO		_IOR('H', 0x03, struct hiddev_devinfo)
-#define HIDIOCINITREPORT	_IO('H', 0x05)
-#define HIDIOCGREPORT		_IOW('H', 0x07, struct hiddev_report_info)
-#define HIDIOCSREPORT		_IOW('H', 0x08, struct hiddev_report_info)
-#define HIDIOCGUSAGES		_IOWR('H', 0x13, struct hiddev_usage_ref_multi)
-#define HIDIOCSUSAGES		_IOW('H', 0x14, struct hiddev_usage_ref_multi)
-#define HIDIOCGFLAG			_IOR('H', 0x0E, int)
-#define HIDIOCSFLAG			_IOW('H', 0x0F, int)
-
-#define HIDDEV_FLAG_UREF	0x1
-#define HIDDEV_FLAG_REPORT	0x2
-#define HIDDEV_FLAGS		0x3
 
 /*** end hiddev.h ***/
 
@@ -142,39 +96,11 @@ static void fatal(const char *fmt, ...)
 	exit(1);
 }
 
-static int wait_for_input(int fd, int timeout)
-{
-	fd_set fds;
-	struct timeval tv, *tvp;;
-
-	tvp = 0;
-	if (timeout >= 0)
-	{
-		tv.tv_sec = timeout / 1000;
-		tv.tv_usec = timeout % 1000 * 1000;
-		tvp = &tv;
-	}
-
-	FD_ZERO(&fds);
-	FD_SET(fd, &fds);
-
-	return select(fd + 1, &fds, NULL, NULL, tvp);
-}
-
-static void wait_report(int fd, int timeout)
-{
-	struct hiddev_usage_ref uref;
-
-	if (wait_for_input(fd, timeout) > 0)
-		while (read(fd, &uref, sizeof(uref)) > 0)
-			;
-}
-
 static int open_dev(char *path)
 {
 	char buf[128];
 	int i, fd;
-	struct hiddev_devinfo dinfo;
+	struct hidraw_devinfo dinfo;
 
 	for (i = 0; i < 16; ++i)
 	{
@@ -182,7 +108,7 @@ static int open_dev(char *path)
 		fd = open(buf, O_RDWR);
 		if (fd >= 0)
 		{
-			if (ioctl(fd, HIDIOCGDEVINFO, &dinfo) == 0)
+			if (ioctl(fd, HIDIOCGRAWINFO, &dinfo) == 0)
 				if (dinfo.vendor == (short)LOGITECH)
 				{
 					first_byte = 1;
@@ -210,12 +136,8 @@ static int open_dev(char *path)
 
 static void init_dev(int fd)
 {
-	int flag = HIDDEV_FLAG_UREF | HIDDEV_FLAG_REPORT;
-
-	if (fcntl(fd, F_SETFL, O_RDWR | O_NONBLOCK) == -1)
+	if (fcntl(fd, F_SETFL, O_RDWR) == -1)
 		printf("fcntl(O_NONBLOCK): %s\n", strerror(errno));
-	if (ioctl(fd, HIDIOCSFLAG, &flag) == -1)
-		printf("HIDIOCSFLAG: %s\n", strerror(errno));
 }
 
 static void close_dev(int fd)
@@ -223,79 +145,69 @@ static void close_dev(int fd)
 	close(fd);
 }
 
-static void send_report(int fd, int id, const int *buf, int n)
+static void send_report(int fd, u8 id, const u8 *buf, int n)
 {
-	struct hiddev_usage_ref_multi uref;
-	struct hiddev_report_info rinfo;
-	int i;
+	int i, res;
+	u8 *send_buf = (u8*) malloc(n+1);
+	send_buf[0] = id;
 
-	uref.uref.report_type = HID_REPORT_TYPE_OUTPUT;
-	uref.uref.report_id = id;
-	uref.uref.field_index = 0;
-	uref.uref.usage_index = 0;
-	uref.num_values = n;
-	for (i = 0; i < n; ++i)
-		uref.values[i] = buf[i];
-	if (ioctl(fd, HIDIOCSUSAGES, &uref) == -1)
-		fatal("send report %02x/%d, HIDIOCSUSAGES: %s", id, n, strerror(errno));
+	for(i = 1; i < n+1; i++) {
+		send_buf[i] = buf[i-1];
+		printf("%x\n", send_buf[i]);
+	}
 
-	rinfo.report_type = HID_REPORT_TYPE_OUTPUT;
-	rinfo.report_id = id;
-	rinfo.num_fields = 1;
-	if (ioctl(fd, HIDIOCSREPORT, &rinfo) == -1)
-		fatal("send report %02x/%d, HIDIOCSREPORT: %s", id, n, strerror(errno));
+	res = write(fd, send_buf, n+1);
 
-	wait_report(fd, 3000);
+	if (res < 0) {
+		printf("Error: %d\n", errno);
+		perror("write");
+	} else {
+		printf("write() wrote %d bytes\n", res);
+	}
+
+	//wait_report(fd, 3000);
 }
 
-static void query_report(int fd, int id, int *buf, int n)
+static void query_report(int fd, u8 id, u8 *buf, int n)
 {
-	struct hiddev_usage_ref_multi uref;
-	struct hiddev_report_info rinfo;
-	int i;
-
-	rinfo.report_type = HID_REPORT_TYPE_INPUT;
-	rinfo.report_id = id;
-	rinfo.num_fields = 1;
-	if (ioctl(fd, HIDIOCGREPORT, &rinfo) == -1)
-		fatal("query report %02x/%d, HIDIOCGREPORT: %s", id, n, strerror(errno));
-
-	wait_report(fd, 3000);
-
-	uref.uref.report_type = HID_REPORT_TYPE_INPUT;
-	uref.uref.report_id = id;
-	uref.uref.field_index = 0;
-	uref.uref.usage_index = 0;
-	uref.num_values = n;
-	if (ioctl(fd, HIDIOCGUSAGES, &uref) == -1)
-		fatal("query report %02x/%d, HIDIOCGUSAGES: %s", id, n, strerror(errno));
-	for (i = 0; i < n; ++i)
-		buf[i] = uref.values[i];
+	int res,i;
+	res = read(fd, buf, n+1);
+	buf = buf+1;
+	if (res < 0) {
+		perror("read");
+	} else {
+		printf("read() read %d bytes:\n\t", res);
+		for (i = 0; i < res; i++)
+			printf("%hhx ", buf[i]);
+		puts("\n");
+	}
 }
 
-static void mx_cmd(int fd, int b1, int b2, int b3)
+static void mx_cmd(int fd, u8 b1, u8 b2, u8 b3)
 {
-	int buf[6] = { first_byte, 0x80, 0x56, b1, b2, b3 };
+	u8 buf[6] = { first_byte, 0x80, 0x56, b1, b2, b3 };
 
 	send_report(fd, 0x10, buf, 6);
 }
 
-static int mx_query(int fd, int b1, int *res)
+static int mx_query(int fd, u8 b1, u8 *res)
 {
-	int buf[6] = { first_byte, 0x81, b1, 0, 0, 0 };
+	u8 buf[6] = { first_byte, 0x81, b1, 0, 0, 0 };
 	int i;
 
 	send_report(fd, 0x10, buf, 6);
-	res[0] = -1;
 	query_report(fd, 0x10, res, 6);
 
+	for (int i = 0; i < 6; i++)
+		res[i] = res[i+1];
+
 	if ((
-		res[0]  != 0x01 ||
+		res[0]  != 0x00 ||
 		res[1]  != 0x81 ||
 		(res[2] != 0xb1 && res[2] != 0x08)
 	) && (
-		(res[0] != 0x02 && res[0] != 0x01) ||
-		res[1]  != 0x81                    ||
+		res[0]  != 0x00 ||
+		res[1]  != 0x81 ||
 		(res[2] != 0x0d && res[2] != 0x08)
 	))
 	{
@@ -366,7 +278,7 @@ static void configure(int handle, int argc, char **argv)
 
 	for (i = 1; i < argc; ++i)
 	{
-		int perm = 0x80;
+		u8 perm = 0x80;
 		char *cmd = argv[i];
 
 		if (strneq(cmd, "temp-", 5))
@@ -405,7 +317,7 @@ static void configure(int handle, int argc, char **argv)
 		}
 		else if (strneq(argv[i], "reconnect", 9))
 		{
-			static const int cmd[] = { 0xff, 0x80, 0xb2, 1, 0, 0 };
+			static const u8 cmd[] = { 0xff, 0x80, 0xb2, 1, 0, 0 };
 
 			twoargs(argv[i] + 9, &arg1, &arg2, 0, 0, 255);
 			send_report(handle, 0x10, cmd, 6);
@@ -415,11 +327,10 @@ static void configure(int handle, int argc, char **argv)
 			printf(" - Turn on the mouse\n");
 			printf(" - Press the right button 5 times\n");
 			printf(" - Release the left mouse button\n");
-			wait_report(handle, 60000);
 		}
 		else if (strneq(argv[i], "mode", 4))
 		{
-			int buf[6];
+			u8 buf[6];
 
 			if (mx_query(handle, 0x08, buf))
 			{
@@ -431,11 +342,11 @@ static void configure(int handle, int argc, char **argv)
 		}
 		else if (strneq(argv[i], "battery", 7))
 		{
-			int buf[6];
+			u8 buf[6];
 
 			if (mx_query(handle, 0x0d, buf))
 			{
-				char str[32], *st;
+				u8 str[32], *st;
 
 				switch (buf[5])
 				{
@@ -451,14 +362,14 @@ static void configure(int handle, int argc, char **argv)
 		/*** debug commands ***/
 		else if (strneq(argv[i], "raw", 3))
 		{
-			int buf[256], n;
+			u8 buf[256], n;
 
 			n = nargs(argv[i] + 3, buf, 256, 0, 0, 255);
 			send_report(handle, buf[0], buf+1, n-1);
 		}
 		else if (strneq(argv[i], "query", 5))
 		{
-			int buf[256], j;
+			u8 buf[256], j;
 
 			twoargs(argv[i] + 5, &arg1, &arg2, -1, 0, 255);
 			if (arg1 == -1)
@@ -469,22 +380,6 @@ static void configure(int handle, int argc, char **argv)
 			for (j = 0; j < arg2; ++j)
 				printf(" %02x", buf[j]);
 			printf("\n");
-		}
-		else if (strneq(argv[i], "dump", 4))
-		{
-			twoargs(cmd + 4, &arg1, &arg2, 3, -1, 24*60*60);
-			if (arg1 > 0)
-				arg1 *= 1000;
-			while (wait_for_input(handle, arg1) > 0)
-			{
-				struct hiddev_usage_ref uref;
-
-				if (read(handle, &uref, sizeof(uref)) == sizeof(uref))
-					printf("read: type=%u, id=%u, field=%08x, usage=%08x,"
-						" code=%08x, value=%u\n",
-						uref.report_type, uref.report_id, uref.field_index,
-						uref.usage_index, uref.usage_code, uref.value);
-			}
 		}
 		else if (strneq(argv[i], "sleep", 5))
 		{
@@ -571,9 +466,7 @@ int main(int argc, char **argv)
 	if (argc > 1 && (streq(argv[1], "-h") || streq(argv[1], "--help")))
 		usage();
 
-	handle = open_dev("/dev/usb/hiddev%d");
-	if (handle == -1)
-		handle = open_dev("/dev/hiddev%d");
+	handle = open_dev("/dev/hidraw%d");
 	if (handle == -1)
 		trouble_shooting();
 
