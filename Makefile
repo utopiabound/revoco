@@ -1,5 +1,5 @@
 V=1.0
-CFLAGS=-Os -DVERSION=\"$(V)\" -Wall
+CFLAGS=-Os -DVERSION=\"$(V)\" -Wall $(USER_DEFINES)
 LDFLAGS=-s
 
 revoco: revoco.o
