@@ -105,6 +105,10 @@ static int open_dev(char *path)
 		if (fd >= 0)
 		{
 			if (ioctl(fd, HIDIOCGRAWINFO, &dinfo) == 0)
+			{
+#ifdef DEBUG
+				printf("/dev/hidraw%d 0x%04hx:0x%04hx 0x%04hx:0x%04hx\n", i, dinfo.vendor, dinfo.product, LOGITECH, MX_REVOLUTION5);
+#endif
 				if (dinfo.vendor == (short)LOGITECH)
 				{
 					first_byte = 1;
@@ -124,6 +128,7 @@ static int open_dev(char *path)
 						return fd;
 					}
 				}
+			}
 			close(fd);
 		}
 	}
@@ -157,8 +162,6 @@ static void send_report(int fd, u8 id, u8 *buf, int n)
 		printf("Error: %d\n", errno);
 		perror("write");
 	}
-
-	//wait_report(fd, 3000);
 }
 
 static void query_report(int fd, u8 id, u8 *buf, int n)
@@ -410,9 +413,9 @@ static void trouble_shooting(void)
 	char *path;
 	int fd;
 
-	fd = open(path = "/dev/hiddev0", O_RDWR);
+	fd = open(path = "/dev/hidraw0", O_RDWR);
 	if (fd == -1 && errno == ENOENT)
-		fd = open(path = "/dev/usb/hiddev0", O_RDWR);
+		fd = open(path = "/dev/usb/hidraw0", O_RDWR);
 
 	if (fd != -1)
 		fatal("No Logitech MX-Revolution"
@@ -425,24 +428,10 @@ static void trouble_shooting(void)
 			  );
 
 	if (errno == EPERM || errno == EACCES)
-		fatal("No permission to access hiddev (%s-15)\n"
+		fatal("No permission to access hidraw (%s-15)\n"
 		"Try 'sudo revoco ...'", path);
 
-	fatal("Hiddev kernel driver not found.  Check with 'dmesg | grep hiddev'\n"
-	"whether it is present in the kernel.  If it is, make sure that the device\n"
-	"nodes (either /dev/usb/hiddev0-15 or /dev/hiddev0-15) are present.  You\n"
-	"can create them with\n"
-	"\n"
-	"\tmkdir /dev/usb\n"
-	"\tmknod /dev/usb/hiddev0 c 180 96\n"
-	"\tmknod /dev/usb/hiddev1 c 180 97\n\t...\n"
-	"\n"
-	"or better by adding a rule to the udev database in\n"
-	"/etc/udev/rules.d/10-local.rules\n"
-	"\n"
-	"\tBUS=\"usb\", KERNEL=\"hiddev[0-9]*\", NAME=\"usb/%k\", MODE=\"660\"\n"
-	"\n"
-	"Sometimes running from superuser may help.\n");
+	fatal("Device not found.'\n");
 }
 
 int main(int argc, char **argv)
