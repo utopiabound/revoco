@@ -146,7 +146,7 @@ static void close_dev(int fd)
 	close(fd);
 }
 
-static void send_report(int fd, u8 id, u8 *buf, int n)
+static void send_report(int fd, u8 id, const u8 *buf, int n)
 {
 	int i, res;
 	u8 *send_buf = (u8*) malloc(n+1);
@@ -166,7 +166,7 @@ static void send_report(int fd, u8 id, u8 *buf, int n)
 
 static void query_report(int fd, u8 id, u8 *buf, int n)
 {
-	int res,i;
+	int res;
 	res = read(fd, buf, n+1);
 	buf = buf+1;
 	if (res < 0) {
@@ -213,7 +213,7 @@ static int mx_query(int fd, u8 b1, u8 *res)
 	return 1;
 }
 
-static char * onearg(char *str, char prefix, int *arg, int def, int min, int max)
+static char * onearg(char *str, char prefix, u8 *arg, int def, int min, int max)
 {
 	char *end;
 	long n;
@@ -236,7 +236,7 @@ static char * onearg(char *str, char prefix, int *arg, int def, int min, int max
 	return end;
 }
 
-static void twoargs(char *str, int *arg1, int *arg2, int def, int min, int max)
+static void twoargs(char *str, u8 *arg1, u8 *arg2, int def, int min, int max)
 {
 	char *p = str;
 
@@ -246,7 +246,7 @@ static void twoargs(char *str, int *arg1, int *arg2, int def, int min, int max)
 		fatal("malformed argument `%s'", str);
 }
 
-static int nargs(char *str, int *buf, int n, int def, int min, int max)
+static int nargs(char *str, u8 *buf, int n, int def, int min, int max)
 {
 	char *p = str;
 	int i = 0, del = '=';
@@ -265,7 +265,8 @@ static int nargs(char *str, int *buf, int n, int def, int min, int max)
 
 static void configure(int handle, int argc, char **argv)
 {
-	int i, arg1, arg2;
+	int i;
+	u8 arg1, arg2;
 
 	for (i = 1; i < argc; ++i)
 	{
@@ -337,7 +338,7 @@ static void configure(int handle, int argc, char **argv)
 
 			if (mx_query(handle, 0x0d, buf))
 			{
-				u8 str[32], *st;
+				char str[32], *st;
 
 				switch (buf[5])
 				{
