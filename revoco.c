@@ -56,6 +56,7 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <getopt.h>
 #include <sys/ioctl.h>
 #include <linux/types.h>
 #include <linux/input.h>
@@ -69,15 +70,17 @@ typedef unsigned int u32;
 #define streq(a,b)	(strcmp((a), (b)) == 0)
 #define strneq(a,b,c)	(strncmp((a), (b), (c)) == 0)
 
-#define LOGITECH		0x046d
-#define MX_REVOLUTION	0xc51a	// version RR41.01_B0025
-#define MX_REVOLUTION2	0xc525	// version RQR02.00_B0020
-#define MX_REVOLUTION3	0xc526	// don't know which version this is
-#define MX_REVOLUTION4	0xc52b	// Unifying Receiver (added 2015-05-30)
-#define MX_REVOLUTION5	0xb007	// ??? R0019 (added 2015-05-30)
-#define MX_5500			0xc71c	// keyboard/mouse combo - experimental
+#define LOGITECH	(short)0x046d
+#define MX_REVOLUTION	(short)0xc51a	// version RR41.01_B0025
+#define MX_REVOLUTION2	(short)0xc525	// version RQR02.00_B0020
+#define MX_REVOLUTION3	(short)0xc526	// don't know which version this is
+#define MX_REVOLUTION4	(short)0xc52b	// Unifying Receiver (added 2015-05-30)
+#define MX_REVOLUTION5	(short)0xb007	// ??? R0019 (added 2015-05-30)
+#define MX_5500		(short)0xc71c	// keyboard/mouse combo - experimental
 
 static u8 first_byte;
+
+static int debug = 0;
 
 static void fatal(const char *fmt, ...)
 {
@@ -106,25 +109,29 @@ static int open_dev(char *path)
 		{
 			if (ioctl(fd, HIDIOCGRAWINFO, &dinfo) == 0)
 			{
-#ifdef DEBUG
-				printf("/dev/hidraw%d 0x%04hx:0x%04hx 0x%04hx:0x%04hx\n", i, dinfo.vendor, dinfo.product, LOGITECH, MX_REVOLUTION5);
-#endif
-				if (dinfo.vendor == (short)LOGITECH)
+				if (dinfo.vendor == LOGITECH)
 				{
-					first_byte = 1;
-					if (dinfo.product == (short)MX_REVOLUTION)
-						return fd;
-					if (dinfo.product == (short)MX_REVOLUTION2)
-						return fd;
-					if (dinfo.product == (short)MX_REVOLUTION3)
-						return fd;
-					if (dinfo.product == (short)MX_REVOLUTION4)
-						return fd;
-					if (dinfo.product == (short)MX_REVOLUTION5)
-						return fd;
-					if (dinfo.product == (short)MX_5500)
-					{
+					switch (dinfo.product) {
+					case MX_REVOLUTION:
+					case MX_REVOLUTION2:
+					case MX_REVOLUTION3:
+					case MX_REVOLUTION4:
+					case MX_REVOLUTION5:
+						first_byte = 1;
+						break;
+
+					case MX_5500:
 						first_byte = 2;
+						break;
+					}
+
+					if (first_byte != 0) {
+						if (debug)
+							printf("Found %s %04x:%04x first_byte:%d\n",
+							       buf,
+							       (ushort)dinfo.vendor,
+							       (ushort)dinfo.product,
+							       first_byte);
 						return fd;
 					}
 				}
@@ -438,22 +445,57 @@ static void trouble_shooting(void)
 int main(int argc, char **argv)
 {
 	int handle;
+	int opt;
+	char default_filename[] = "/dev/usb/hiddev%d";
+	char *filename = default_filename;
 
 	if (argc < 2)
 		usage();
-	if (argc > 1 && (streq(argv[1], "-h") || streq(argv[1], "--help")))
-		usage();
 
-	handle = open_dev("/dev/hidraw%d");
+	static struct option long_options[] = {
+	    {"help",	no_argument,		0, 'h'},
+	    {"device",	required_argument,	0, 'd'},
+	    {"verbose",	no_argument,		0, 'v'},
+	    {0,		0,			0, 0}
+	};
+
+	do {
+		opt = getopt_long(argc, argv, "d:hv",
+				  long_options, NULL);
+
+		switch (opt) {
+		case 'd':
+			filename = optarg;
+			break;
+		case 'h':
+			usage();
+			exit(0);
+		case 'v':
+			++debug;
+			break;
+		case -1: break;
+		default:
+			fprintf(stderr, "revoco: Option %d(%c) not understood\n",
+				opt, opt);
+			break;
+		}
+	} while (opt >= 0);
+
+	handle = open_dev(filename);
+	if (handle == -1 && filename != default_filename)
+		handle = open_dev(default_filename);
+	if (handle == -1)
+		handle = open_dev("/dev/hiddev%d");
 	if (handle == -1)
 		trouble_shooting();
 
 	init_dev(handle);
 
-	configure(handle, argc, argv);
+	if (optind < argc) {
+		--optind;
+		configure(handle, argc-optind, argv+optind);
+	}
 
 	close_dev(handle);
 	exit(0);
 }
-
-/* EOF */
