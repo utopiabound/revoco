@@ -25,6 +25,29 @@
  *
  * If z=0 switch temporary, if z=8 set as default after powerup.
  *
+ *   SHORT_MESSAGE (0x10) Commands (Length is 7 BYTES)
+ *   SEND: 0x10 RECEIVER COMMAND REGISTER ARG1 ARG2 ARG3
+ *   RECV: 0x10 RECIEVER COMMAND REGISTER ANS1 ANS2 ANS3
+ *   ERR:  0x10 RECIEVER 0x8F    COMMAND REGISTER CODE ??
+ *   RECEIVERS
+ *	0x01 MOUSE
+ *	0x02 KEYBOARD
+ *	0xff DONGLE?
+ *   COMMANDS
+ *	0x80 SET REGISTER
+ *      0x81 GET REGISTER
+ *   REGISTERS
+ *	0x08 WHEEL MODE
+ *		ANS3  0 = free, 1 = click
+ *	0x0D BATTERY
+ *		ANS1  Battery %
+ *		ANS2  ?
+ *		ANS3  STATE
+ *			0x30  running on battery
+ *			0x50  charging
+ *			0x90  fully charged
+ *			0xd0  bad battery
+ *
  * Button numbers:
  *   0 previously set button
  *   1 left button	(can't be used for mode changes)
@@ -95,48 +118,41 @@ static void fatal(const char *fmt, ...)
 	exit(1);
 }
 
-static int open_dev(char *path)
+static int check_dev(int fd)
 {
-	char buf[128];
-	int i, fd;
 	struct hidraw_devinfo dinfo;
 
-	for (i = 0; i < 16; ++i)
+	if (ioctl(fd, HIDIOCGRAWINFO, &dinfo) == 0)
 	{
-		sprintf(buf, path, i);
-		fd = open(buf, O_RDWR);
-		if (fd >= 0)
+		if (debug > 1)
+			printf("Checking %04hx:%04hx\n",
+			       dinfo.vendor,
+			       dinfo.product);
+
+		if (dinfo.vendor == LOGITECH)
 		{
-			if (ioctl(fd, HIDIOCGRAWINFO, &dinfo) == 0)
-			{
-				if (dinfo.vendor == LOGITECH)
-				{
-					switch (dinfo.product) {
-					case MX_REVOLUTION:
-					case MX_REVOLUTION2:
-					case MX_REVOLUTION3:
-					case MX_REVOLUTION4:
-					case MX_REVOLUTION5:
-						first_byte = 1;
-						break;
+			switch (dinfo.product) {
+			case MX_REVOLUTION:
+			case MX_REVOLUTION2:
+			case MX_REVOLUTION3:
+			case MX_REVOLUTION4:
+			case MX_REVOLUTION5:
+				first_byte = 1;
+				break;
 
-					case MX_5500:
-						first_byte = 2;
-						break;
-					}
-
-					if (first_byte != 0) {
-						if (debug)
-							printf("Found %s %04x:%04x first_byte:%d\n",
-							       buf,
-							       (ushort)dinfo.vendor,
-							       (ushort)dinfo.product,
-							       first_byte);
-						return fd;
-					}
-				}
+			case MX_5500:
+				first_byte = 2;
+				break;
 			}
-			close(fd);
+
+			if (first_byte != 0) {
+				if (debug)
+					printf("Found %04hx:%04hx first_byte:%d\n",
+					       dinfo.vendor,
+					       dinfo.product,
+					       first_byte);
+				return fd;
+			}
 		}
 	}
 	return -1;
@@ -153,7 +169,7 @@ static void close_dev(int fd)
 	close(fd);
 }
 
-static void send_report(int fd, u8 id, const u8 *buf, int n)
+static int send_report(int fd, u8 id, const u8 *buf, int n)
 {
 	int i, res;
 	u8 *send_buf = (u8*) malloc(n+1);
@@ -163,37 +179,54 @@ static void send_report(int fd, u8 id, const u8 *buf, int n)
 		send_buf[i] = buf[i-1];
 	}
 
+	if (debug > 2) {
+		printf("TX:");
+		for (i = 0; i < n+1; ++i)
+			printf(" %02x", send_buf[i]);
+		printf("\n");
+	}
+
 	res = write(fd, send_buf, n+1);
 
 	if (res < 0) {
 		printf("Error: %d\n", errno);
-		perror("write");
+		perror("send_report");
 	}
+	return res;
 }
 
 static void query_report(int fd, u8 id, u8 *buf, int n)
 {
 	int res;
 	res = read(fd, buf, n+1);
+	if (debug > 1) {
+		int i;
+		printf("RX:");
+		for (i = 0; i < n+1; ++i)
+			printf(" %02x", buf[i]);
+		printf("\n");
+	}
 	buf = buf+1;
 	if (res < 0) {
 		perror("read");
 	}
 }
 
-static void mx_cmd(int fd, u8 b1, u8 b2, u8 b3)
+static int mx_cmd(int fd, u8 b1, u8 b2, u8 b3)
 {
 	u8 buf[6] = { first_byte, 0x80, 0x56, b1, b2, b3 };
 
-	send_report(fd, 0x10, buf, 6);
+	return send_report(fd, 0x10, buf, 6);
 }
 
 static int mx_query(int fd, u8 b1, u8 *res)
 {
 	u8 buf[6] = { first_byte, 0x81, b1, 0, 0, 0 };
-	int i;
+	int i, rc;
 
-	send_report(fd, 0x10, buf, 6);
+	rc = send_report(fd, 0x10, buf, 6);
+	if (rc < 0)
+		return 0;
 	query_report(fd, 0x10, res, 6);
 
 	for (int i = 0; i < 6; i++)
@@ -212,7 +245,7 @@ static int mx_query(int fd, u8 b1, u8 *res)
 		printf("bad answer:");
 		for (i = 0; i < 6; ++i)
 		{
-		  printf("%02X ", res[i]);
+			printf("%02X ", res[i]);
 		}
 		printf("\n");
 		return 0;
@@ -329,7 +362,7 @@ static void configure(int handle, int argc, char **argv)
 		}
 		else if (strneq(argv[i], "mode", 4))
 		{
-			u8 buf[6];
+			u8 buf[6] = { 0 };
 
 			if (mx_query(handle, 0x08, buf))
 			{
@@ -341,11 +374,11 @@ static void configure(int handle, int argc, char **argv)
 		}
 		else if (strneq(argv[i], "battery", 7))
 		{
-			u8 buf[6];
+			u8 buf[6] = { 0 };
 
 			if (mx_query(handle, 0x0d, buf))
 			{
-				char str[32], *st;
+				char str[32] = { 0 }, *st;
 
 				switch (buf[5])
 				{
@@ -362,14 +395,14 @@ static void configure(int handle, int argc, char **argv)
 		/*** debug commands ***/
 		else if (strneq(argv[i], "raw", 3))
 		{
-			u8 buf[256], n;
+			u8 buf[256] = { 0 }, n;
 
 			n = nargs(argv[i] + 3, buf, 256, 0, 0, 255);
 			send_report(handle, buf[0], buf+1, n-1);
 		}
 		else if (strneq(argv[i], "query", 5))
 		{
-			u8 buf[256], j;
+			u8 buf[256] = { 0 }, j;
 
 			twoargs(argv[i] + 5, &arg1, &arg2, -1, 0, 255);
 			if (arg1 == -1)
@@ -428,7 +461,7 @@ static void trouble_shooting(void)
 
 	if (fd != -1)
 		fatal("No Logitech MX-Revolution"
-		      "(%04x:%04x, %04x:%04x, %04x:%04x, %04x:%04x, or %04x:%04x) found.",
+		      "(%04hx:%04hx, %04hx:%04hx, %04hx:%04hx, %04hx:%04hx, or %04hx:%04hx) found.",
 		      LOGITECH, MX_REVOLUTION,
 		      LOGITECH, MX_REVOLUTION2,
 		      LOGITECH, MX_REVOLUTION3,
@@ -445,10 +478,9 @@ static void trouble_shooting(void)
 
 int main(int argc, char **argv)
 {
-	int handle;
+	int handle = -1;
 	int opt;
-	char default_filename[] = "/dev/usb/hiddev%d";
-	char *filename = default_filename;
+	char *filename = NULL;
 
 	if (argc < 2)
 		usage();
@@ -482,11 +514,38 @@ int main(int argc, char **argv)
 		}
 	} while (opt >= 0);
 
-	handle = open_dev(filename);
-	if (handle == -1 && filename != default_filename)
-		handle = open_dev(default_filename);
-	if (handle == -1)
-		handle = open_dev("/dev/hiddev%d");
+	if (filename) {
+		handle = open(filename, O_RDWR);
+		if (handle >= 0) {
+			if (check_dev(handle) < 0) {
+				filename = NULL;
+				handle = -1;
+				close(handle);
+			}
+		}
+	}
+
+	if (handle == -1) {
+		char buf[128];
+		int i, fd;
+
+		for (i = 0; i < 16; ++i) {
+			sprintf(buf, "/dev/hidraw%d", i);
+			fd = open(buf, O_RDWR);
+			if (fd >= 0)
+			{
+				if (debug > 1)
+					printf("Trying %s\n", buf);
+
+				if (check_dev(fd) == fd) {
+					handle = fd;
+					break;
+				}
+				close(fd);
+			}
+		}
+	}
+
 	if (handle == -1)
 		trouble_shooting();
 
